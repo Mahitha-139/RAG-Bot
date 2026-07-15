@@ -1,0 +1,57 @@
+import os
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_community.document_loaders import TextLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.vectorstores import Chroma
+
+# 1. Set up your Google Gemini API Key
+os.environ["GOOGLE_API_KEY"] = "YOUR_GEMINI_API_KEY"
+
+# 2. Load your data (Create a file named 'knowledge.txt' in the same folder first)
+print("Reading document...")
+loader = TextLoader("knowledge.txt")
+document = loader.load()
+
+# 3. Split text into small chunks so the AI can read it easily
+text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+chunks = text_splitter.split_documents(document)
+
+# 4. Turn text into numbers (Embeddings) using a free tool
+print("Converting text into math vectors...")
+embedding_function = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+
+# 5. Store these numbers in a local "Vector Database"
+vector_db = Chroma.from_documents(chunks, embedding_function)
+
+# 6. Create the search system (Retriever)
+retriever = vector_db.as_retriever(search_kwargs={"k": 2}) # Fetches top 2 closest chunks
+
+# 7. Start the Chatbot
+llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash")
+
+print("\n--- RAG Chatbot is Ready! ---")
+while True:
+    query = input("\nAsk a question (or type 'exit'): ")
+    if query.lower() == 'exit':
+        break
+        
+    # Find relevant data from your text file
+    relevant_docs = retriever.invoke(query)
+    context = "\n".join([doc.page_content for doc in relevant_docs])
+    
+    # Create a prompt combining the document data and user question
+    prompt = f"""
+    Answer the question strictly using the provided context below. 
+    If you don't know the answer, say 'I cannot find this in the document'.
+    
+    Context:
+    {context}
+    
+    Question: {query}
+    Answer:
+    """
+    
+    # Get response from Gemini LLM
+    response = llm.invoke(prompt)
+    print("\nBot:", response.content)
