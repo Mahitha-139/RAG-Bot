@@ -1,0 +1,90 @@
+import os
+import streamlit as ui
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_community.document_loaders import TextLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain_community.vectorstores import Chroma
+
+# --- Web Page Configuration ---
+ui.set_page_config(page_title="RAG AI Chatbot", page_icon="🤖", layout="centered")
+ui.title("🤖 Document-Based RAG Chatbot")
+ui.write("Ask questions based on your custom `knowledge.txt` file.")
+
+# --- Sidebar for API Key ---
+ui.sidebar.header("Configuration")
+api_key = ui.sidebar.text_input("Enter Google Gemini API Key:", type="password")
+
+if not api_key:
+    ui.warning("Please enter your Google Gemini API key in the sidebar to start.")
+    ui.stop()
+
+os.environ["GOOGLE_API_KEY"] = api_key
+
+# --- Backend Processing (Cached to run only once) ---
+@ui.cache_resource
+def prepare_rag_system():
+    if not os.path.exists("knowledge.txt"):
+        # Create a dummy file if it doesn't exist yet
+        with open("knowledge.txt", "w") as f:
+            f.write("Welcome! This chatbot reads data from knowledge.txt.")
+            
+    loader = TextLoader("knowledge.txt")
+    document = loader.load()
+    
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+    chunks = text_splitter.split_documents(document)
+    
+    embedding_function = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+    vector_db = Chroma.from_documents(chunks, embedding_function)
+    return vector_db.as_retriever(search_kwargs={"k": 2})
+
+try:
+    retriever = prepare_rag_system()
+    llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash")
+except Exception as e:
+    ui.error(f"Error setting up RAG system: {e}")
+    ui.stop()
+
+# --- Chat History Setup ---
+if "messages" not in ui.session_state:
+    ui.session_state.messages = []
+
+# Display previous chat messages
+for msg in ui.session_state.messages:
+    with ui.chat_message(msg["role"]):
+        ui.markdown(msg["content"])
+
+# --- User Input & AI Response ---
+if user_query := ui.chat_input("Ask something about your document..."):
+    # Display user message
+    with ui.chat_message("user"):
+        ui.markdown(user_query)
+    ui.session_state.messages.append({"role": "user", "content": user_query})
+
+    # Generate bot response
+    with ui.chat_message("assistant"):
+        with ui.spinner("Searching document and generating answer..."):
+            # 1. Fetch relevant blocks from document
+            relevant_docs = retriever.invoke(user_query)
+            context = "\n".join([doc.page_content for doc in relevant_docs])
+            
+            # 2. Build the strict prompt
+            prompt = f"""
+            Answer the question strictly using the provided context below. 
+            If you don't know the answer, say 'I cannot find this in the document'.
+            
+            Context:
+            {context}
+            
+            Question: {user_query}
+            Answer:
+            """
+            
+            # 3. Get answer from Gemini
+            response = llm.invoke(prompt)
+            bot_answer = response.content
+            
+            ui.markdown(bot_answer)
+            
+    ui.session_state.messages.append({"role": "assistant", "content": bot_answer})
